@@ -70,7 +70,7 @@ class Runtime:
         self._reconcile_root_config()
         self.vectors: VectorStore = create_vector_store(self.paths, self.config)
         self.indexer = Indexer(self.catalog, self.vectors, self.config, self.lock)
-        self.search = SearchEngine(self.catalog, self.vectors, self.config)
+        self.search = SearchEngine(self.catalog, self.vectors, self.config, self.paths.model_cache)
         self.watcher = StudyWatcher(self.catalog, self.indexer, self.config)
         if start_watcher:
             self.watcher.start()

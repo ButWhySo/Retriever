@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from collections import defaultdict
 from pathlib import Path
 
@@ -15,11 +16,38 @@ log = logging.getLogger(__name__)
 
 
 class SearchEngine:
-    def __init__(self, catalog: Catalog, vectors: VectorStore, config: AppConfig):
+    def __init__(self, catalog: Catalog, vectors: VectorStore, config: AppConfig, model_cache: Path | None = None):
         self.catalog = catalog
         self.vectors = vectors
         self.config = config
         self.degraded = False
+        self._model_cache = model_cache
+        self._reranker = None
+        self._reranker_lock = threading.Lock()
+
+    def _load_reranker(self, name: str):
+        with self._reranker_lock:
+            if self._reranker is None:
+                from fastembed.rerank.cross_encoder import TextCrossEncoder
+
+                self._reranker = TextCrossEncoder(
+                    model_name=name, cache_dir=str(self._model_cache) if self._model_cache else None, threads=2
+                )
+            return self._reranker
+
+    def _rerank(self, query: str, hits: list[SearchHit]) -> list[SearchHit]:
+        """Reorder the top hits with a cross-encoder; any failure keeps the fused order."""
+        name = self.config.reranker_model
+        if not name or len(hits) < 2:
+            return hits
+        k = min(self.config.rerank_top_k, len(hits))
+        try:
+            scores = list(self._load_reranker(name).rerank(query, [h.text[: self.config.rerank_chars] for h in hits[:k]]))
+            order = sorted(range(k), key=lambda i: (-float(scores[i]), i))
+            return [hits[i] for i in order] + hits[k:]
+        except Exception:
+            log.exception("rerank failed; keeping fused order")
+            return hits
 
     @staticmethod
     def _matches_filters(row: dict, path_prefix: str | None, file_types: list[str] | None) -> bool:
@@ -94,6 +122,7 @@ class SearchEngine:
         )
         rows = self.catalog.get_chunks(ordered)
         hits: list[SearchHit] = []
+        limit = max(top_k, self.config.rerank_top_k) if self.config.reranker_model else top_k
         for cid in ordered:
             row = rows.get(cid)
             if not row or not self._matches_filters(row, path_prefix, file_types):
@@ -113,9 +142,9 @@ class SearchEngine:
                     lexical_rank=lexical_rank.get(cid),
                 )
             )
-            if len(hits) >= top_k:
+            if len(hits) >= limit:
                 break
-        return hits
+        return self._rerank(query, hits)[:top_k]
 
     def fetch(self, chunk_id: str, *, neighbor_radius: int = 1) -> dict | None:
         row = self.catalog.get_chunk(chunk_id)

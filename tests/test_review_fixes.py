@@ -425,3 +425,35 @@ def test_long_sync_returns_running_and_completes_in_background(tmp_path: Path, m
     finally:
         release.set()
         rt.close()
+
+
+def test_optional_reranker_reorders_top_hits_and_fails_open(tmp_path: Path) -> None:
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    for i in range(5):
+        (corpus / f"doc{i}.md").write_text(f"alpha topic number {i} " + "alpha " * (5 - i) + "\n", encoding="utf-8")
+    home = tmp_path / "home"
+    paths = Paths(home)
+    save_config(paths, AppConfig(vector_backend="hashing", watcher_enabled=False, reranker_model="fake", rerank_top_k=4))
+    rt = Runtime(home=home, start_watcher=False)
+    try:
+        rt.add_root(str(corpus), sync_now=True)
+        plain = [h.chunk_id for h in rt.search.hybrid_search("alpha", top_k=5)]
+        assert len(plain) == 5
+
+        class Reverse:
+            def rerank(self, _q, texts):
+                return [float(i) for i in range(len(texts))]  # last candidate scores highest
+
+        rt.search._reranker = Reverse()
+        reordered = [h.chunk_id for h in rt.search.hybrid_search("alpha", top_k=5)]
+        assert reordered[:4] == plain[:4][::-1] and reordered[4] == plain[4]
+
+        class Broken:
+            def rerank(self, _q, _texts):
+                raise RuntimeError("model missing")
+
+        rt.search._reranker = Broken()
+        assert [h.chunk_id for h in rt.search.hybrid_search("alpha", top_k=5)] == plain
+    finally:
+        rt.close()

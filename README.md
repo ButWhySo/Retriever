@@ -87,6 +87,27 @@ claude plugin install study-retriever@study-retriever --scope user
 
 Claude Code connects to MCP servers within 30 seconds by default; set `MCP_TIMEOUT=120000` if the first start is slow while a large sync is running. Claude.ai in the browser cannot use local stdio servers.
 
+## Configuration and security
+
+Settings live in `%LOCALAPPDATA%\StudyRetriever\config.json`. Notable options:
+
+| Option | Default | Purpose |
+|---|---|---|
+| `reranker_model` | `null` | Optional cross-encoder rerank of the top hits, e.g. `"Xenova/ms-marco-MiniLM-L-6-v2"` (80 MB, downloaded on first use). On a 39-query hand-labeled sample, reranking the top 10 hits (`rerank_top_k`, text cut to `rerank_chars`=600) raised MRR@10 from 0.51 to 0.65 for about 1.2 s extra per query; the sample is small and biased, so test it on your own material. |
+| `exclude_globs` | `[]` | Patterns (relative to the root, e.g. `"*-presentation.pdf"`) that are never indexed. |
+| `allow_mcp_root_changes` | `false` | Let an assistant add/remove study roots through MCP tools. Off by default so text inside a document cannot widen what gets indexed; use `manage.cmd add-root <path>` instead. |
+| `min_free_disk_mb` | `1024` | The indexer refuses to write when the data drive has less free space; `index_status` reports `free_disk_mb`. |
+| `model_idle_unload_seconds` | `300` | Drop the embedding model from RAM after this much idle time (about 180 MB per idle process); `0` disables. |
+| `max_text_bytes`, `max_office_uncompressed_bytes`, `max_ocr_pages` | 32 MB, 256 MB, 200 | Fail-closed limits against oversized or crafted files. |
+
+Security model and known limits:
+
+- The server uses stdio only and opens no network port. Indexed text, paths and OCR output are stored unencrypted under the data directory.
+- Text returned from search is untrusted document content; the server instructions and the bundled skill tell the model never to follow instructions found in it.
+- Drive roots, the whole user profile, credential folders (`.ssh`, `.aws`, ...), system folders and application data are refused as roots. Files that resolve outside their root (for example through a junction) are skipped.
+- Not yet covered: the update feed trusts a checksum delivered with the ZIP (no signature), and install-time `pip` resolves transitive dependencies without a hash lock. Verify downloads before installing from an untrusted mirror.
+- Embedding-model note: a read-only memory-mapped vector index would save RAM, but Windows refuses to atomically replace a mapped file, so it is deliberately not used.
+
 ## Updating an installed release
 
 Study Retriever 1.1+ has an atomic updater. It preserves `%LOCALAPPDATA%\StudyRetriever` (configuration, catalog, vectors, and model cache), replaces only plugin/runtime code, runs the full live health gate, clears only Study Retriever's disposable ChatGPT local-plugin cache, and rolls the previous release back if installation fails.

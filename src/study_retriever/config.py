@@ -55,6 +55,10 @@ class AppConfig:
     allow_mcp_root_changes: bool = False
     max_text_bytes: int = 32 * 1024 * 1024  # text/HTML/SVG are read whole; bigger files fail closed
     max_ocr_pages: int = 200
+    # Optional cross-encoder rerank of the top hybrid hits (off by default; adds a model and query latency).
+    reranker_model: str | None = None  # e.g. "Xenova/ms-marco-MiniLM-L-6-v2"
+    rerank_top_k: int = 10
+    rerank_chars: int = 600
     min_free_disk_mb: int = 1024  # refuse index writes below this (a full drive can corrupt SQLite/vector files)
     model_idle_unload_seconds: int = 300  # drop the embedding model from RAM when idle; 0 disables
     max_office_uncompressed_bytes: int = 256 * 1024 * 1024  # zip-bomb guard for DOCX/PPTX/XLSX
@@ -74,6 +78,8 @@ class AppConfig:
             raise ValueError("watcher_debounce_seconds must be >= 0.1")
         if self.max_file_bytes < 1:
             raise ValueError("max_file_bytes must be >= 1")
+        if self.rerank_top_k < 1 or self.rerank_chars < 100:
+            raise ValueError("rerank_top_k must be >= 1 and rerank_chars >= 100")
         if self.min_free_disk_mb < 0 or self.model_idle_unload_seconds < 0:
             raise ValueError("min_free_disk_mb and model_idle_unload_seconds must be >= 0")
         if not all(isinstance(p, str) and p for p in self.exclude_globs):
