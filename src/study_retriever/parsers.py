@@ -6,8 +6,9 @@ import json
 import re
 import shutil
 from pathlib import Path
+from typing import Any, cast
 
-from .config import SUPPORTED_SUFFIXES
+from .config import SUPPORTED_SUFFIXES, AppConfig
 from .models import Block, ParsedDocument
 
 
@@ -44,7 +45,27 @@ def _strip_markdown_images(text: str) -> str:
     return _MD_IMAGE.sub(lambda m: "" if _GENERIC_ALT.fullmatch(m.group(1)) else m.group(1), text)
 
 
+def _limits() -> AppConfig:
+    return AppConfig()
+
+
+def _check_text_size(path: Path) -> None:
+    if path.stat().st_size > _limits().max_text_bytes:
+        raise ValueError(f"{path.name}: larger than the {_limits().max_text_bytes // 2**20} MB text-parser limit")
+
+
+def _check_zip(path: Path) -> None:
+    """Reject zip bombs before python-docx/pptx/openpyxl load every part into memory."""
+    import zipfile
+
+    with zipfile.ZipFile(path) as zf:
+        total = sum(info.file_size for info in zf.infolist())
+    if total > _limits().max_office_uncompressed_bytes:
+        raise ValueError(f"{path.name}: archive expands to {total // 2**20} MB, over the safety limit")
+
+
 def _generic_text(path: Path) -> ParsedDocument:
+    _check_text_size(path)
     text = _decode_bytes(path.read_bytes())
     suffix = path.suffix.lower()
     if suffix in {".md", ".markdown", ".qmd"}:
@@ -62,6 +83,16 @@ def _generic_text(path: Path) -> ParsedDocument:
     )
 
 
+MAX_OCR_PIXELS = 6000
+
+
+def _ocr_dpi(page: Any) -> int:
+    """OCR resolution that keeps the raster under MAX_OCR_PIXELS per side; 0 means skip (crafted giant page)."""
+    longest = max(float(page.rect.width), float(page.rect.height), 1.0)
+    dpi = min(150, int(MAX_OCR_PIXELS * 72 / longest))
+    return dpi if dpi >= 40 else 0
+
+
 def _tessdata() -> str | None:
     exe = shutil.which("tesseract")
     folder = Path(exe).parent / "tessdata" if exe else None
@@ -71,7 +102,7 @@ def _tessdata() -> str | None:
 def _pdf(path: Path) -> ParsedDocument:
     import fitz
 
-    doc = fitz.open(path)
+    doc: Any = fitz.open(path)
     try:
         title = (doc.metadata or {}).get("title") or path.stem
         toc = doc.get_toc(simple=True) or []
@@ -89,11 +120,13 @@ def _pdf(path: Path) -> ParsedDocument:
         blocks: list[Block] = []
         ocr_available = shutil.which("tesseract") is not None
         ocr_pages: list[int] = []
+        max_ocr = _limits().max_ocr_pages
         for i, page in enumerate(doc, start=1):
             text = _clean_text(page.get_text("text", sort=True))
-            if len(text) < 20 and ocr_available:
+            ocr_dpi = _ocr_dpi(page) if len(text) < 20 and ocr_available and len(ocr_pages) < max_ocr else 0
+            if ocr_dpi:
                 try:
-                    tp = page.get_textpage_ocr(language="eng", dpi=150, full=True, tessdata=_tessdata())
+                    tp = page.get_textpage_ocr(language="eng", dpi=ocr_dpi, full=True, tessdata=_tessdata())
                     ocr_text = _clean_text(page.get_text("text", textpage=tp, sort=True))
                     if len(ocr_text) > len(text):
                         text = ocr_text
@@ -126,15 +159,15 @@ def _image(path: Path) -> ParsedDocument:
 
     blocks: list[Block] = []
     if path.stat().st_size >= 2048 and shutil.which("tesseract") is not None:
-        doc = fitz.open(path)
+        doc: Any = fitz.open(path)
         try:
             page = doc[0]
-            tp = page.get_textpage_ocr(
-                language="eng", dpi=150, full=True, tessdata=_tessdata()
-            )
-            text = _clean_text(page.get_text("text", textpage=tp, sort=True))
-            if _legible(text):
-                blocks.append(Block(text, locator={"image": path.name}))
+            ocr_dpi = _ocr_dpi(page)
+            if ocr_dpi:
+                tp = page.get_textpage_ocr(language="eng", dpi=ocr_dpi, full=True, tessdata=_tessdata())
+                text = _clean_text(str(page.get_text("text", textpage=tp, sort=True)))
+                if _legible(text):
+                    blocks.append(Block(text, locator={"image": path.name}))
         finally:
             doc.close()
     return ParsedDocument(title=path.stem, blocks=blocks, metadata={"format": "image-ocr"})
@@ -145,8 +178,12 @@ def _svg(path: Path) -> ParsedDocument:
     import xml.etree.ElementTree as ET
 
     texts: list[str] = []
+    _check_text_size(path)
+    raw = _decode_bytes(path.read_bytes())
+    if "<!ENTITY" in raw:
+        raise ValueError(f"{path.name}: SVG with entity declarations is refused (expansion attack)")
     try:
-        for el in ET.fromstring(_decode_bytes(path.read_bytes()).encode("utf-8")).iter():
+        for el in ET.fromstring(raw.encode("utf-8")).iter():
             if el.tag.rsplit("}", 1)[-1] in {"title", "desc", "text"}:
                 value = _clean_text(" ".join("".join(el.itertext()).split()))
                 if value and value not in texts:
@@ -177,7 +214,8 @@ def _npz(path: Path) -> ParsedDocument:
 def _docx(path: Path) -> ParsedDocument:
     from docx import Document
 
-    doc = Document(path)
+    _check_zip(path)
+    doc = Document(str(path))
     title = path.stem
     current_heading = ""
     blocks: list[Block] = []
@@ -208,7 +246,8 @@ def _docx(path: Path) -> ParsedDocument:
 def _pptx(path: Path) -> ParsedDocument:
     from pptx import Presentation
 
-    prs = Presentation(path)
+    _check_zip(path)
+    prs = Presentation(str(path))
     title = path.stem
     blocks: list[Block] = []
     for slide_index, slide in enumerate(prs.slides, start=1):
@@ -218,7 +257,7 @@ def _pptx(path: Path) -> ParsedDocument:
             slide_title = _clean_text(slide.shapes.title.text)
             if slide_index == 1 and slide_title:
                 title = slide_title
-        for shape in slide.shapes:
+        for shape in cast(Any, slide.shapes):
             if getattr(shape, "has_text_frame", False):
                 text = _clean_text(shape.text)
                 if text and text != slide_title:
@@ -229,7 +268,7 @@ def _pptx(path: Path) -> ParsedDocument:
         try:
             notes_text: list[str] = []
             notes_slide = slide.notes_slide
-            for shape in notes_slide.shapes:
+            for shape in cast(Any, notes_slide.shapes):
                 if getattr(shape, "has_text_frame", False):
                     t = _clean_text(shape.text)
                     if t and not t.lower().startswith("click to edit"):
@@ -249,6 +288,7 @@ def _pptx(path: Path) -> ParsedDocument:
 def _xlsx(path: Path) -> ParsedDocument:
     from openpyxl import load_workbook
 
+    _check_zip(path)
     wb = load_workbook(path, read_only=True, data_only=False)
     try:
         blocks: list[Block] = []
@@ -298,6 +338,7 @@ def _ipynb(path: Path) -> ParsedDocument:
 def _html(path: Path) -> ParsedDocument:
     from bs4 import BeautifulSoup
 
+    _check_text_size(path)
     soup = BeautifulSoup(_decode_bytes(path.read_bytes()), "html.parser")
     for tag in soup(["script", "style", "noscript", "svg"]):
         tag.decompose()

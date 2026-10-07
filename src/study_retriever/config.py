@@ -51,6 +51,13 @@ class AppConfig:
     roots: list[str] = field(default_factory=list)
     # Filter layer (ch. 13): fnmatch patterns on the path relative to its root, e.g. "*-presentation.pdf".
     exclude_globs: list[str] = field(default_factory=list)
+    # Prompt-injection hardening: an LLM tool call must not be able to widen what gets indexed unless the user opts in.
+    allow_mcp_root_changes: bool = False
+    max_text_bytes: int = 32 * 1024 * 1024  # text/HTML/SVG are read whole; bigger files fail closed
+    max_ocr_pages: int = 200
+    min_free_disk_mb: int = 1024  # refuse index writes below this (a full drive can corrupt SQLite/vector files)
+    model_idle_unload_seconds: int = 300  # drop the embedding model from RAM when idle; 0 disables
+    max_office_uncompressed_bytes: int = 256 * 1024 * 1024  # zip-bomb guard for DOCX/PPTX/XLSX
 
     def validate(self) -> None:
         if self.chunk_chars < 400:
@@ -67,6 +74,8 @@ class AppConfig:
             raise ValueError("watcher_debounce_seconds must be >= 0.1")
         if self.max_file_bytes < 1:
             raise ValueError("max_file_bytes must be >= 1")
+        if self.min_free_disk_mb < 0 or self.model_idle_unload_seconds < 0:
+            raise ValueError("min_free_disk_mb and model_idle_unload_seconds must be >= 0")
         if not all(isinstance(p, str) and p for p in self.exclude_globs):
             raise ValueError("exclude_globs must be non-empty strings")
         if self.vector_backend not in {"fastembed-usearch", "hashing"}:

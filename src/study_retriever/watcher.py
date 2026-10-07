@@ -16,14 +16,25 @@ log = logging.getLogger(__name__)
 
 
 class StudyWatcher:
+    QUEUE_MAX = 100_000  # event storms (git checkout, mass copy) must not grow memory without bound
+
     def __init__(self, catalog: Catalog, indexer: Indexer, config: AppConfig):
         self.catalog = catalog
         self.indexer = indexer
         self.config = config
         self._observer = None
-        self._queue: queue.Queue[tuple[str, bool]] = queue.Queue()
+        self._queue: queue.Queue[tuple[str, bool]] = queue.Queue(maxsize=self.QUEUE_MAX)
+        self.dropped = 0
         self._stop = threading.Event()
         self._worker: threading.Thread | None = None
+
+    def _enqueue(self, raw: str, is_directory: bool) -> None:
+        try:
+            self._queue.put_nowait((raw, is_directory))
+        except queue.Full:
+            self.dropped += 1  # the next sync/reconcile pass finds whatever was dropped
+            if self.dropped == 1 or self.dropped % 10_000 == 0:
+                log.warning("watcher queue full; %d events dropped so far (a full sync will catch up)", self.dropped)
 
     def start(self) -> bool:
         if not self.config.watcher_enabled or self._observer is not None:
@@ -43,9 +54,9 @@ class StudyWatcher:
                 src = getattr(event, "src_path", None)
                 dest = getattr(event, "dest_path", None)
                 if src:
-                    owner._queue.put((src, is_directory))
+                    owner._enqueue(src, is_directory)
                 if dest:
-                    owner._queue.put((dest, is_directory))
+                    owner._enqueue(dest, is_directory)
 
         observer = Observer()
         scheduled: set[tuple[str, bool]] = set()
@@ -126,7 +137,7 @@ class StudyWatcher:
         try:
             beat = self.catalog.db_path.parent / "watcher-heartbeat.json"
             tmp = beat.with_suffix(".tmp")
-            tmp.write_text(json.dumps({"pid": os.getpid(), "ts": time.time(), "pending": self._queue.qsize()}), encoding="utf-8")
+            tmp.write_text(json.dumps({"pid": os.getpid(), "ts": time.time(), "pending": self._queue.qsize(), "dropped": self.dropped}), encoding="utf-8")
             os.replace(tmp, beat)
         except OSError:
             pass

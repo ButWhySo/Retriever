@@ -16,6 +16,29 @@ from .search import SearchEngine
 from .vector_store import VectorStore, create_vector_store
 from .watcher import StudyWatcher
 
+_CREDENTIAL_DIRS = {".ssh", ".aws", ".gnupg", ".azure", ".kube", ".docker", ".password-store"}
+_SYSTEM_TOP_LEVEL = {"windows", "program files", "program files (x86)", "programdata", "$recycle.bin", "system volume information"}
+
+
+def check_root_allowed(root: Path) -> None:
+    """Refuse roots that would sweep up credentials or the whole profile (data-exfiltration guard)."""
+    root = root.expanduser().resolve()
+    home = Path.home().resolve()
+    parts = [p.casefold() for p in root.parts]
+    if root == Path(root.anchor) or root == home or home.is_relative_to(root):
+        raise PermissionError(f"Refusing to index a drive root or the whole user profile: {root}")
+    if _CREDENTIAL_DIRS & set(parts):
+        raise PermissionError(f"Refusing to index a credentials folder: {root}")
+    if len(parts) > 1 and parts[1] in _SYSTEM_TOP_LEVEL:
+        raise PermissionError(f"Refusing to index a system folder: {root}")
+    if "appdata" in parts:
+        rest = parts[parts.index("appdata") + 1:]
+        if rest[:2] != ["local", "temp"]:
+            raise PermissionError(f"Refusing to index application data (browser profiles, tokens): {root}")
+
+
+SYNC_WAIT_SECONDS = 25.0  # stay under client tool-call timeouts; long syncs keep running in the background
+
 
 def lower_process_priority() -> None:
     """Keep background indexing from competing with the foreground apps (Windows: BELOW_NORMAL)."""
@@ -39,6 +62,10 @@ class Runtime:
         self.config = load_config(self.paths)
         self._configure_logging()
         self.lock = threading.RLock()
+        self._sync_lock = threading.Lock()
+        self._sync_thread: threading.Thread | None = None
+        self._sync_result: dict | None = None
+        self._sync_error: BaseException | None = None
         self.catalog = Catalog(self.paths.db)
         self._reconcile_root_config()
         self.vectors: VectorStore = create_vector_store(self.paths, self.config)
@@ -49,6 +76,29 @@ class Runtime:
             self.watcher.start()
         if reconcile:
             threading.Thread(target=self._safe_reconcile, name="study-retriever-reconcile", daemon=True).start()
+
+    def start_sync(self, force: bool = False, wait: float | None = None) -> dict:
+        """Run a sync, waiting up to `wait` seconds; a longer sync continues in the background (see status.sync_running)."""
+        with self._sync_lock:
+            if self._sync_thread is None or not self._sync_thread.is_alive():
+                self._sync_result, self._sync_error = None, None
+
+                def run() -> None:
+                    try:
+                        self._sync_result = self.indexer.sync_all(force=force)
+                    except BaseException as exc:  # noqa: BLE001 - surfaced to the caller below
+                        self._sync_error = exc
+
+                self._sync_thread = threading.Thread(target=run, name="study-retriever-sync", daemon=True)
+                self._sync_thread.start()
+            thread = self._sync_thread
+        thread.join(SYNC_WAIT_SECONDS if wait is None else wait)
+        if thread.is_alive():
+            zero = {"indexed": 0, "unchanged": 0, "deleted": 0, "errors": 0, "chunks_added": 0}
+            return {"total": zero, "roots": {}, "status": "running"}
+        if self._sync_error is not None:
+            raise self._sync_error
+        return {**(self._sync_result or {"total": {}, "roots": {}}), "status": "completed"}
 
     def _reconcile_root_config(self) -> None:
         configured = {str(Path(p).expanduser().resolve()) for p in self.config.roots}
@@ -91,6 +141,7 @@ class Runtime:
         root = Path(path).expanduser().resolve()
         if not root.exists():
             raise FileNotFoundError(root)
+        check_root_allowed(root)
         with self.indexer.process_lock, self.lock:
             self.catalog.add_root(root)
             if str(root) not in self.config.roots:
@@ -137,6 +188,8 @@ class Runtime:
             "vector_count_matches_chunks": self.vectors.count() == stats["chunks"],
             "error_sources": self.catalog.error_sources(),
             "watcher_heartbeat_age_s": self._heartbeat_age(),
+            "free_disk_mb": self.indexer.free_disk_mb(),
+            "sync_running": bool(self._sync_thread and self._sync_thread.is_alive()),
         })
         return stats
 

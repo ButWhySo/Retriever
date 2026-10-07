@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import contextlib
+import gc
 import hashlib
 import logging
 import math
@@ -7,7 +9,8 @@ import os
 import re
 import sqlite3
 import threading
-from typing import Sequence, TypeAlias
+import time
+from typing import Any, Sequence, TypeAlias
 
 import numpy as np
 
@@ -61,18 +64,67 @@ class FastEmbedUSearchStore:
         self._lock = threading.RLock()
         self._process_lock = InterProcessLock(paths.home / "vector-index.lock")
         # Keep each Codex/Desktop worker light; ONNX thread pools multiply per MCP process.
-        threads = min(2, max(1, (os.cpu_count() or 2) - 1))
-        self.model = TextEmbedding(
-            model_name=config.model_name,
-            cache_dir=str(paths.model_cache),
-            threads=threads,
-        )
-        self.dim = int(self.model.embedding_size)
+        self._threads = min(2, max(1, (os.cpu_count() or 2) - 1))
+        self._TextEmbedding = TextEmbedding
+        self._model: Any = None
+        self._model_lock = threading.Lock()
+        self._busy = 0
+        self._last_used = time.monotonic()
+        self._unload_timer: threading.Timer | None = None
+        try:
+            self.dim = int(TextEmbedding.get_embedding_size(config.model_name))  # no model load needed for the dimension
+        except Exception:
+            self.dim = int(self.model.embedding_size)
         slug = re.sub(r"[^A-Za-z0-9_.-]+", "_", config.model_name).strip("_")
         self.index_path = paths.home / f"vectors-{slug}-{self.dim}.usearch"
         self._disk_signature: tuple[int, int] | None = None
         with self._process_lock, self._lock:
-            self.index = self._load_index_from_disk()
+            self.index: Any = self._load_index_from_disk()
+
+    @property
+    def model(self) -> Any:
+        """Lazily (re)load the ONNX model; it is dropped again after model_idle_unload_seconds of inactivity."""
+        with self._model_lock:
+            if self._model is None:
+                self._model = self._TextEmbedding(
+                    model_name=self.config.model_name, cache_dir=str(self.paths.model_cache), threads=self._threads
+                )
+            self._last_used = time.monotonic()
+            self._arm_unload_timer_locked(self.config.model_idle_unload_seconds)
+            return self._model
+
+    def _arm_unload_timer_locked(self, delay: float) -> None:
+        if self.config.model_idle_unload_seconds <= 0 or self._unload_timer is not None:
+            return
+        timer = threading.Timer(max(0.05, delay), self._maybe_unload)
+        timer.daemon = True
+        self._unload_timer = timer
+        timer.start()
+
+    def _maybe_unload(self) -> None:
+        with self._model_lock:
+            self._unload_timer = None
+            if self._model is None:
+                return
+            idle = time.monotonic() - self._last_used
+            ttl = self.config.model_idle_unload_seconds
+            if self._busy == 0 and idle >= ttl:
+                self._model = None
+                gc.collect()
+                log.info("embedding model unloaded after %.0fs idle", idle)
+            else:
+                self._arm_unload_timer_locked(max(0.5, ttl - idle))
+
+    @contextlib.contextmanager
+    def _using_model(self):
+        with self._model_lock:
+            self._busy += 1
+        try:
+            yield self.model
+        finally:
+            with self._model_lock:
+                self._busy -= 1
+                self._last_used = time.monotonic()
 
     def _new_index(self):
         return self._Index(
@@ -91,10 +143,10 @@ class FastEmbedUSearchStore:
         except FileNotFoundError:
             return None
 
-    def _load_index_from_disk(self):
+    def _load_index_from_disk(self) -> Any:
         signature = self._signature()
         if signature and signature[1] > 0:
-            index = self._Index.restore(str(self.index_path), view=False)
+            index: Any = self._Index.restore(str(self.index_path), view=False)
             if int(index.ndim) != self.dim:
                 raise RuntimeError(
                     f"Vector index dimension {index.ndim} does not match model dimension {self.dim}. Run rebuild-vectors."
@@ -125,9 +177,11 @@ class FastEmbedUSearchStore:
         if not chunks:
             return np.empty((0, self.dim), dtype=np.float32)
         texts = [c.embedding_text for c in chunks]
+        with self._using_model() as model:
+            raw = list(model.passage_embed(texts, batch_size=self.config.embedding_batch_size))
         return _validate_embedding_matrix(
             np.asarray(
-                list(self.model.passage_embed(texts, batch_size=self.config.embedding_batch_size)),
+                raw,
                 dtype=np.float32,
             ),
             len(chunks),
@@ -181,7 +235,9 @@ class FastEmbedUSearchStore:
     def search(self, query: str, limit: int) -> list[tuple[int, float]]:
         if not query.strip() or limit < 1:
             return []
-        vector = _validate_query_vector(next(iter(self.model.query_embed(query))), self.dim)
+        with self._using_model() as model:
+            raw_vector = next(iter(model.query_embed(query)))
+        vector = _validate_query_vector(raw_vector, self.dim)
         with self._lock:
             self._refresh_if_changed()
             if len(self.index) == 0:
@@ -202,7 +258,9 @@ class FastEmbedUSearchStore:
             self._disk_signature = None
 
     def warmup(self) -> None:
-        _validate_query_vector(next(iter(self.model.query_embed("warmup semantic retrieval"))), self.dim)
+        with self._using_model() as model:
+            raw_vector = next(iter(model.query_embed("warmup semantic retrieval")))
+        _validate_query_vector(raw_vector, self.dim)
 
     @property
     def description(self) -> str:

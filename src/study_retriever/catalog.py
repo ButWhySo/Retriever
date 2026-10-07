@@ -17,6 +17,7 @@ def _now() -> str:
 
 
 def _fts_query(query: str) -> str:
+    query = query.replace("\x00", " ")
     tokens = re.findall(r"[^\W_]+(?:[-_+][^\W_]+)*|[A-Za-z_][A-Za-z0-9_+.-]*", query, flags=re.UNICODE)
     seen: set[str] = set()
     cleaned: list[str] = []
@@ -246,6 +247,7 @@ class Catalog:
         return [dict(r) for r in rows]
 
     def lexical_search(self, query: str, limit: int) -> list[tuple[str, float]]:
+        query = query.replace("\x00", " ")
         match = _fts_query(query)
         if not match or match == '""':
             return []
@@ -264,11 +266,14 @@ class Catalog:
             escaped = query.replace('"', '""').strip()
             if not escaped:
                 return []
-            rows = self._conn().execute(
-                """SELECT chunk_id, bm25(chunks_fts) AS score FROM chunks_fts
-                   WHERE chunks_fts MATCH ? ORDER BY score LIMIT ?""",
-                (f'"{escaped}"', limit),
-            ).fetchall()
+            try:
+                rows = self._conn().execute(
+                    """SELECT chunk_id, bm25(chunks_fts) AS score FROM chunks_fts
+                       WHERE chunks_fts MATCH ? ORDER BY score LIMIT ?""",
+                    (f'"{escaped}"', limit),
+                ).fetchall()
+            except sqlite3.OperationalError:
+                return []
         return [(str(r["chunk_id"]), float(r["score"])) for r in rows]
 
 

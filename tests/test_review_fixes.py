@@ -1,3 +1,4 @@
+# pyright: reportArgumentType=false, reportAttributeAccessIssue=false, reportOptionalMemberAccess=false
 from __future__ import annotations
 
 import threading
@@ -211,4 +212,216 @@ def test_status_reports_watcher_heartbeat(tmp_path: Path) -> None:
         age = rt.status()["watcher_heartbeat_age_s"]
         assert age is not None and age < 5
     finally:
+        rt.close()
+
+
+def test_root_deny_list_blocks_profile_and_credentials_but_allows_study_folders(tmp_path: Path) -> None:
+    import pytest
+
+    from study_retriever.runtime import check_root_allowed
+
+    home = Path.home()
+    for bad in (home, home.parent, Path(home.anchor), home / ".ssh", home / "AppData" / "Roaming" / "Mozilla"):
+        with pytest.raises(PermissionError):
+            check_root_allowed(bad)
+    check_root_allowed(tmp_path)  # pytest temp dir lives under AppData\Local\Temp and must stay allowed
+    study = tmp_path / "Study" / "notes"
+    study.mkdir(parents=True)
+    check_root_allowed(study)
+
+
+def test_mcp_root_changes_are_opt_in(tmp_path: Path, monkeypatch) -> None:
+    import pytest
+    from mcp.server.mcpserver.exceptions import ToolError
+
+    from study_retriever import mcp_server
+
+    folder = tmp_path / "docs"
+    folder.mkdir()
+    (folder / "a.md").write_text("some indexed text\n", encoding="utf-8")
+    rt = make_runtime(tmp_path)
+    monkeypatch.setattr(mcp_server, "_rt", lambda: rt)
+    monkeypatch.delenv("STUDY_RETRIEVER_ALLOW_MCP_ROOT_CHANGES", raising=False)
+    try:
+        with pytest.raises(ToolError, match="disabled"):
+            mcp_server.add_study_root(str(folder))
+        with pytest.raises(ToolError, match="disabled"):
+            mcp_server.remove_study_root(str(folder))
+        monkeypatch.setenv("STUDY_RETRIEVER_ALLOW_MCP_ROOT_CHANGES", "1")
+        assert mcp_server.add_study_root(str(folder)).root.endswith("docs")
+    finally:
+        rt.close()
+
+
+def test_nul_query_and_oversized_inputs_fail_safely(tmp_path: Path, monkeypatch) -> None:
+    import pytest
+
+    import study_retriever.parsers as parsers
+    from study_retriever.config import AppConfig as Cfg
+
+    rt = make_runtime(tmp_path)
+    try:
+        assert rt.catalog.lexical_search("\x00", 5) == []
+        assert rt.search.hybrid_search("find \x00 this", top_k=3) == []
+    finally:
+        rt.close()
+
+    big = tmp_path / "big.md"
+    big.write_text("x" * 5000, encoding="utf-8")
+    monkeypatch.setattr(parsers, "_limits", lambda: Cfg(max_text_bytes=1000))
+    with pytest.raises(ValueError, match="text-parser limit"):
+        parsers.parse_document(big)
+
+    svg = tmp_path / "bomb.svg"
+    svg.write_text('<!DOCTYPE s [<!ENTITY a "aaaa">]><svg xmlns="http://www.w3.org/2000/svg"><text>&a;</text></svg>', encoding="utf-8")
+    with pytest.raises(ValueError, match="entity"):
+        parsers.parse_document(svg)
+
+
+def test_pdf_render_is_clamped_to_a_pixel_budget(tmp_path: Path) -> None:
+    import struct
+
+    import fitz
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    doc = fitz.open()
+    doc.new_page(width=14400, height=14400)  # crafted 200-inch page
+    doc.save(corpus / "huge.pdf")
+    doc.close()
+
+    rt = make_runtime(tmp_path)
+    try:
+        rt.add_root(str(corpus), sync_now=True)
+        png = rt.search.render_pdf_page(path=str(corpus / "huge.pdf"), page=1, dpi=300)
+        width, height = struct.unpack(">II", png[16:24])
+        assert max(width, height) <= 4100
+    finally:
+        rt.close()
+
+
+def test_disk_space_guard_refuses_writes_when_drive_is_nearly_full(tmp_path: Path, monkeypatch) -> None:
+    import shutil as _shutil
+    from collections import namedtuple
+
+    import pytest
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    doc = corpus / "a.md"
+    doc.write_text("some study note\n", encoding="utf-8")
+    rt = make_runtime(tmp_path)
+    usage = namedtuple("usage", "total used free")
+    try:
+        monkeypatch.setattr(_shutil, "disk_usage", lambda _p: usage(10**12, 10**12 - 5 * 2**20, 5 * 2**20))
+        assert rt.indexer.index_file(doc, corpus)[0] == "disk_full"
+        assert rt.catalog.source_by_path(doc) is None
+        assert rt.status()["free_disk_mb"] == 5
+        with pytest.raises(RuntimeError, match="free disk space"):
+            rt.indexer.rebuild_vectors()
+        monkeypatch.undo()
+        assert rt.indexer.index_file(doc, corpus)[0] == "indexed"
+    finally:
+        rt.close()
+
+
+def test_search_degrades_to_lexical_when_dense_side_fails(tmp_path: Path) -> None:
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "a.md").write_text("gradient descent updates parameters along the negative gradient\n", encoding="utf-8")
+    rt = make_runtime(tmp_path)
+    try:
+        rt.add_root(str(corpus), sync_now=True)
+
+        def boom(*_a, **_k):
+            raise RuntimeError("ONNX bad allocation")
+
+        rt.vectors.search = boom  # type: ignore[method-assign]
+        hits = rt.search.hybrid_search("negative gradient", top_k=3)
+        assert hits and rt.search.degraded is True
+        assert all(h.dense_rank is None for h in hits)
+    finally:
+        rt.close()
+
+
+def test_model_is_unloaded_when_idle_and_reloaded_on_demand(tmp_path: Path, monkeypatch) -> None:
+    import time
+
+    import fastembed
+    import numpy as np
+
+    from study_retriever.vector_store import FastEmbedUSearchStore
+
+    loads = []
+
+    class FakeModel:
+        embedding_size = 8
+
+        def __init__(self, **_kw):
+            loads.append(1)
+
+        def query_embed(self, _q):
+            yield np.ones(8, dtype=np.float32)
+
+        def passage_embed(self, texts, batch_size=16):
+            for _ in texts:
+                yield np.ones(8, dtype=np.float32)
+
+        @classmethod
+        def get_embedding_size(cls, _name):
+            return 8
+
+    monkeypatch.setattr(fastembed, "TextEmbedding", FakeModel)
+    paths = Paths(tmp_path / "home")
+    store = FastEmbedUSearchStore(paths, AppConfig(model_idle_unload_seconds=1))
+    assert loads == []  # dimension came from metadata; no model load at start-up
+    assert store.search("hello", 3) == []
+    assert len(loads) == 1 and store._model is not None
+    deadline = time.time() + 6
+    while store._model is not None and time.time() < deadline:
+        time.sleep(0.1)
+    assert store._model is None  # unloaded after idling
+    store.search("again", 3)
+    assert len(loads) == 2  # transparently reloaded
+
+
+def test_watcher_queue_is_bounded_and_counts_drops(tmp_path: Path) -> None:
+    import queue
+
+    rt = make_runtime(tmp_path)
+    try:
+        rt.watcher._queue = queue.Queue(maxsize=2)
+        for i in range(5):
+            rt.watcher._enqueue(str(tmp_path / f"f{i}.md"), False)
+        assert rt.watcher._queue.qsize() == 2 and rt.watcher.dropped == 3
+    finally:
+        rt.close()
+
+
+def test_long_sync_returns_running_and_completes_in_background(tmp_path: Path, monkeypatch) -> None:
+    import threading
+    import time
+
+    rt = make_runtime(tmp_path)
+    release = threading.Event()
+    calls = []
+
+    def slow_sync(force=False):
+        calls.append(force)
+        release.wait(timeout=10)
+        return {"total": {"indexed": 1, "unchanged": 0, "deleted": 0, "errors": 0, "chunks_added": 2}, "roots": {}}
+
+    monkeypatch.setattr(rt.indexer, "sync_all", slow_sync)
+    try:
+        first = rt.start_sync(wait=0.2)
+        assert first["status"] == "running" and rt.status()["sync_running"] is True
+        assert rt.start_sync(wait=0.1)["status"] == "running" and len(calls) == 1  # no second sync started
+        release.set()
+        deadline = time.time() + 5
+        while rt.status()["sync_running"] and time.time() < deadline:
+            time.sleep(0.05)
+        done = rt.start_sync(wait=5)
+        assert done["status"] == "completed" and done["total"]["indexed"] == 1
+    finally:
+        release.set()
         rt.close()

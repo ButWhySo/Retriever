@@ -221,7 +221,7 @@ async def _mcp_wire_self_test_async(home: Path | None) -> dict[str, object]:
     from mcp import Client, StdioServerParameters
 
     data_home = Paths(home).home
-    env = {"STUDY_RETRIEVER_HOME": str(data_home)}
+    env = {"STUDY_RETRIEVER_HOME": str(data_home), "STUDY_RETRIEVER_ALLOW_MCP_ROOT_CHANGES": "1"}
     if os.environ.get("PYTHONPATH"):
         env["PYTHONPATH"] = os.environ["PYTHONPATH"]
     params = StdioServerParameters(

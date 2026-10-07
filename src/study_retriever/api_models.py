@@ -45,6 +45,7 @@ class DetailedSearchResult(StrictModel):
 
 class DetailedSearchResponse(StrictModel):
     results: list[DetailedSearchResult]
+    degraded: bool = False  # True when the dense side failed and results are lexical-only
 
 
 class DetailedFetchResponse(StrictModel):
@@ -107,6 +108,8 @@ class IndexStats(StrictModel):
     db_path: str
     error_sources: list[dict[str, str]]
     watcher_heartbeat_age_s: float | None = None
+    free_disk_mb: int | None = None
+    sync_running: bool = False
 
 
 class SyncCounts(StrictModel):
@@ -120,6 +123,7 @@ class SyncCounts(StrictModel):
 class SyncResponse(StrictModel):
     total: SyncCounts
     roots: dict[str, dict[str, Any]]
+    status: str = "completed"  # "running" when the sync outlived the tool-call wait; see index_status.sync_running
 
 
 class RootResponse(StrictModel):

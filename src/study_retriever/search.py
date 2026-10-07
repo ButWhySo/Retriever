@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections import defaultdict
 from pathlib import Path
 
@@ -9,12 +10,16 @@ from .models import SearchHit
 from .parsers import parse_document
 from .vector_store import VectorStore
 
+MAX_RENDER_PIXELS = 4000
+log = logging.getLogger(__name__)
+
 
 class SearchEngine:
     def __init__(self, catalog: Catalog, vectors: VectorStore, config: AppConfig):
         self.catalog = catalog
         self.vectors = vectors
         self.config = config
+        self.degraded = False
 
     @staticmethod
     def _matches_filters(row: dict, path_prefix: str | None, file_types: list[str] | None) -> bool:
@@ -58,7 +63,13 @@ class SearchEngine:
         dense_limit = max(self.config.dense_candidate_count, top_k * multiplier, floor)
         lexical_limit = max(self.config.lexical_candidate_count, top_k * multiplier, floor)
 
-        dense_raw = self.vectors.search(query, dense_limit)
+        try:
+            dense_raw = self.vectors.search(query, dense_limit)
+            self.degraded = False
+        except Exception:  # model load failure, ONNX OOM, damaged index: keep answering from BM25
+            log.exception("dense search failed; returning lexical-only results")
+            dense_raw = []
+            self.degraded = True
         key_map = self.catalog.vector_key_map(key for key, _score in dense_raw)
         dense_ids = [key_map[key] for key, _score in dense_raw if key in key_map]
         lexical_raw = self.catalog.lexical_search(query, lexical_limit)
@@ -236,8 +247,10 @@ class SearchEngine:
             return False
         if row_start is not None or row_end is not None:
             block_start = loc.get("row_start")
-            block_end = loc.get("row_end", block_start)
-            if block_start is None:
+            block_end = loc.get("row_end")
+            if block_end is None:
+                block_end = block_start
+            if block_start is None or block_end is None:
                 return False
             wanted_start = row_start if row_start is not None else -1
             wanted_end = row_end if row_end is not None else 2**63 - 1
@@ -332,6 +345,9 @@ class SearchEngine:
         with fitz.open(source_path) as doc:
             if page < 1 or page > doc.page_count:
                 raise ValueError(f"Page must be between 1 and {doc.page_count}")
+            loaded = doc.load_page(page - 1)
+            longest = max(loaded.rect.width, loaded.rect.height, 1.0)
+            dpi = max(1, min(dpi, int(MAX_RENDER_PIXELS * 72 / longest)))  # crafted huge MediaBox must not allocate GBs
             matrix = fitz.Matrix(dpi / 72.0, dpi / 72.0)
-            pix = doc.load_page(page - 1).get_pixmap(matrix=matrix, alpha=False)
+            pix = loaded.get_pixmap(matrix=matrix, alpha=False)
             return pix.tobytes("png")

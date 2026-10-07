@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import bisect
 import hashlib
+import re
 import uuid
 from pathlib import Path
 
@@ -52,19 +54,23 @@ def chunk_document(
     overlap_chars: int,
 ) -> list[Chunk]:
     sid = source_id_for(path)
-    source_uri = path.resolve().as_uri()
+    resolved = path.resolve()
+    source_uri = resolved.as_uri()
+    resolved_str = str(resolved)
     chunks: list[Chunk] = []
     ordinal = 0
     occurrences: dict[str, int] = {}
     for block in doc.blocks:
+        # Newline offsets once per block: per-chunk slicing made huge single-block files quadratic.
+        newlines = [m.start() for m in re.finditer("\n", block.text)] if "line_start" in block.locator else []
         for char_start, char_end, text in _split_text(block.text, chunk_chars, overlap_chars):
             locator = dict(block.locator)
             locator["char_start"] = char_start
             locator["char_end"] = char_end
             if "line_start" in block.locator:
                 base = int(block.locator.get("line_start", 1))
-                locator["line_start"] = base + block.text[:char_start].count("\n")
-                locator["line_end"] = base + block.text[:char_end].count("\n")
+                locator["line_start"] = base + bisect.bisect_left(newlines, char_start)
+                locator["line_end"] = base + bisect.bisect_left(newlines, char_end)
             context_parts = [doc.title]
             if block.section and block.section.casefold() != doc.title.casefold():
                 context_parts.append(block.section)
@@ -87,7 +93,7 @@ def chunk_document(
                 embedding_text=embedding_text,
                 title=doc.title,
                 section=block.section,
-                path=str(path.resolve()),
+                path=resolved_str,
                 source_uri=source_uri,
                 locator=locator,
             ))

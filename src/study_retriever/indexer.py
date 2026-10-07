@@ -4,6 +4,7 @@ import fnmatch
 import hashlib
 import logging
 import os
+import shutil
 import threading
 import time
 from dataclasses import dataclass
@@ -119,6 +120,16 @@ class Indexer:
         message = (row[0] if row else "") or ""
         return not message.startswith(self._TRANSIENT_ERRORS)
 
+    def free_disk_mb(self) -> int:
+        return int(shutil.disk_usage(self.catalog.db_path.parent).free // 2**20)
+
+    def _disk_ok(self) -> bool:
+        free = self.free_disk_mb()
+        if free < self.config.min_free_disk_mb:
+            log.error("only %d MB free on the data drive (minimum %d); refusing to write the index", free, self.config.min_free_disk_mb)
+            return False
+        return True
+
     def _index_file_locked(self, path: Path, root: Path, *, force: bool = False) -> tuple[str, int]:
         path = path.expanduser().resolve()
         root = root.expanduser().resolve()
@@ -135,6 +146,10 @@ class Indexer:
             return "unsupported", 0
         if self._excluded(path, root):
             return "excluded", 0
+        if not self._disk_ok():
+            return "disk_full", 0
+        if root.is_dir() and not path.is_relative_to(root):
+            return "excluded", 0  # junction/symlink target outside the root: never index across the boundary
         stat = path.stat()
         if stat.st_size > self.config.max_file_bytes:
             return "too_large", 0
@@ -240,7 +255,7 @@ class Indexer:
                 result.chunks_added += chunks
             elif status == "unchanged":
                 result.unchanged += 1
-            elif status == "error":
+            elif status in {"error", "disk_full"}:
                 result.errors += 1
 
         for source in self.catalog.sources_under_root(root):
@@ -297,6 +312,8 @@ class Indexer:
             return {"orphans_removed": len(orphans), "vectors_restored": restored}
 
     def rebuild_vectors(self) -> dict:
+        if not self._disk_ok():
+            raise RuntimeError("Not enough free disk space to rebuild the vector index")
         with self.process_lock, self.lock:
             self.vectors.clear()
             count = 0
