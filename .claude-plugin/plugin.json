@@ -1,0 +1,19 @@
+{
+  "name": "study-retriever",
+  "version": "1.2.0",
+  "description": "Local hybrid retrieval over study material with exact source provenance.",
+  "author": {
+    "name": "Study Retriever Contributors"
+  },
+  "license": "MIT",
+  "keywords": [
+    "study",
+    "retrieval",
+    "RAG",
+    "local",
+    "MCP",
+    "hybrid-search"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./claude.mcp.json"
+}

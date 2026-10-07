@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "study_retriever": {
+      "type": "stdio",
+      "command": "powershell.exe",
+      "args": [
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "scripts/mcp-launch.ps1"
+      ],
+      "cwd": "."
+    }
+  }
+}

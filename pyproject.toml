@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "study-retriever"
+dynamic = ["version"]
+description = "Local hybrid study-material retrieval over MCP for ChatGPT Desktop, Codex, and Claude Code"
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+license = {text = "MIT"}
+authors = [{name = "Study Retriever Contributors"}]
+dependencies = [
+  "mcp==2.2.0",
+  "fastembed==0.8.1",
+  "onnxruntime==1.30.0",
+  "usearch==2.26.2",
+  "PyMuPDF==1.26.7",
+  "python-docx==1.2.0",
+  "python-pptx==1.0.2",
+  "openpyxl==3.1.5",
+  "beautifulsoup4==4.14.3",
+  "watchdog==6.0.0",
+  "numpy==2.3.5",
+  "pydantic==2.13.4",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[project.scripts]
+study-retriever = "study_retriever.cli:main"
+study-retriever-mcp = "study_retriever.mcp_server:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.setuptools.dynamic]
+version = {attr = "study_retriever.__version__"}
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+ignore = ["E501"]

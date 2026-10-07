@@ -1,0 +1,36 @@
+.venv/
+.study-data/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+
+# Ruflo local secrets and runtime data
+.env
+.env.local
+.env.*.local
+.claude-flow/data/
+.claude-flow/logs/
+.claude-flow/sessions/
+
+# Local agent/tool state
+.claude/
+.claude-flow/
+.swarm/
+.agents/
+.benchmarks/
+ruvector.db
+
+# Generated release artifacts are attached to GitHub releases, not committed
+wheelhouse/*.whl
+release.json
+*.zip
+.DS_Store
+Thumbs.db
+
+# Only README.md and the plugin skill are tracked markdown; working notes stay local
+*.md
+!README.md
+!skills/**/SKILL.md

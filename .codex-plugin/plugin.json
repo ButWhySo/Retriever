@@ -1,0 +1,25 @@
+{
+  "name": "study-retriever",
+  "version": "1.2.0",
+  "description": "Local hybrid retrieval over study material with exact source provenance.",
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Study Retriever",
+    "shortDescription": "Search local study material",
+    "longDescription": "Indexes local study folders once, maintains them incrementally, and exposes hybrid semantic plus BM25 retrieval with exact file/page/slide provenance to ChatGPT Desktop.",
+    "developerName": "Study Retriever Contributors",
+    "category": "Productivity",
+    "capabilities": [
+      "Read",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Teach me this topic using all relevant indexed study material and cite every source you use.",
+      "Find relevant sources in my indexed notes, slides, papers, and code for this concept."
+    ]
+  },
+  "author": {
+    "name": "Study Retriever Contributors"
+  }
+}

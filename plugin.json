@@ -1,0 +1,37 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "study-retriever",
+  "version": "1.2.0",
+  "description": "Local hybrid retrieval over study notes, papers, slides, repos, notebooks, documents, and spreadsheets with exact source pointers.",
+  "license": "MIT",
+  "keywords": [
+    "study",
+    "retrieval",
+    "RAG",
+    "local",
+    "MCP",
+    "hybrid-search"
+  ],
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "Study Retriever",
+        "shortDescription": "Search local study material",
+        "longDescription": "Indexes local study folders once, maintains them incrementally, and exposes hybrid semantic plus BM25 retrieval with exact file/page/slide provenance to ChatGPT Desktop.",
+        "developerName": "Study Retriever Contributors",
+        "category": "Productivity",
+        "capabilities": [
+          "Read",
+          "Write"
+        ],
+        "defaultPrompt": [
+          "Teach me this topic using all relevant indexed study material and cite every source you use.",
+          "Find relevant sources in my indexed notes, slides, papers, and code for this concept."
+        ]
+      }
+    }
+  },
+  "author": {
+    "name": "Study Retriever Contributors"
+  }
+}

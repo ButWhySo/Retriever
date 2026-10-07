@@ -1,0 +1,13 @@
+{
+  "name": "study-retriever",
+  "owner": {
+    "name": "Study Retriever Contributors"
+  },
+  "plugins": [
+    {
+      "name": "study-retriever",
+      "source": "./",
+      "description": "Local hybrid retrieval over study material with exact source provenance."
+    }
+  ]
+}
