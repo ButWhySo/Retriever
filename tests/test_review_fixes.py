@@ -230,7 +230,7 @@ def test_root_deny_list_blocks_profile_and_credentials_but_allows_study_folders(
     check_root_allowed(study)
 
 
-def test_mcp_root_changes_are_opt_in(tmp_path: Path, monkeypatch) -> None:
+def test_mcp_root_changes_can_be_disabled(tmp_path: Path, monkeypatch) -> None:
     import pytest
     from mcp.server.mcpserver.exceptions import ToolError
 
@@ -241,13 +241,14 @@ def test_mcp_root_changes_are_opt_in(tmp_path: Path, monkeypatch) -> None:
     (folder / "a.md").write_text("some indexed text\n", encoding="utf-8")
     rt = make_runtime(tmp_path)
     monkeypatch.setattr(mcp_server, "_rt", lambda: rt)
-    monkeypatch.delenv("STUDY_RETRIEVER_ALLOW_MCP_ROOT_CHANGES", raising=False)
+    monkeypatch.setenv("STUDY_RETRIEVER_ALLOW_MCP_ROOT_CHANGES", "0")
     try:
         with pytest.raises(ToolError, match="disabled"):
             mcp_server.add_study_root(str(folder))
         with pytest.raises(ToolError, match="disabled"):
             mcp_server.remove_study_root(str(folder))
-        monkeypatch.setenv("STUDY_RETRIEVER_ALLOW_MCP_ROOT_CHANGES", "1")
+        monkeypatch.delenv("STUDY_RETRIEVER_ALLOW_MCP_ROOT_CHANGES")
+        assert rt.config.allow_mcp_root_changes
         assert mcp_server.add_study_root(str(folder)).root.endswith("docs")
     finally:
         rt.close()

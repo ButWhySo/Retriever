@@ -47,9 +47,10 @@ def _rt():
 
 def _require_root_changes_enabled() -> None:
     """add/remove root over MCP is opt-in: injected document text must not be able to widen the index."""
-    if os.environ.get("STUDY_RETRIEVER_ALLOW_MCP_ROOT_CHANGES") == "1":
+    flag = os.environ.get("STUDY_RETRIEVER_ALLOW_MCP_ROOT_CHANGES")
+    if flag == "1":
         return
-    if not _rt().config.allow_mcp_root_changes:
+    if flag == "0" or not _rt().config.allow_mcp_root_changes:
         raise ToolError(
             "Changing study roots over MCP is disabled. Run `manage.cmd add-root <path>` locally, "
             "or set allow_mcp_root_changes to true in config.json."

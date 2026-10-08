@@ -34,3 +34,4 @@ Thumbs.db
 *.md
 !README.md
 !skills/**/SKILL.md
+debug.log

@@ -52,11 +52,11 @@ class AppConfig:
     # Filter layer (ch. 13): fnmatch patterns on the path relative to its root, e.g. "*-presentation.pdf".
     exclude_globs: list[str] = field(default_factory=list)
     # Prompt-injection hardening: an LLM tool call must not be able to widen what gets indexed unless the user opts in.
-    allow_mcp_root_changes: bool = False
+    allow_mcp_root_changes: bool = True
     max_text_bytes: int = 32 * 1024 * 1024  # text/HTML/SVG are read whole; bigger files fail closed
     max_ocr_pages: int = 200
     # Optional cross-encoder rerank of the top hybrid hits (off by default; adds a model and query latency).
-    reranker_model: str | None = None  # e.g. "Xenova/ms-marco-MiniLM-L-6-v2"
+    reranker_model: str | None = "Xenova/ms-marco-MiniLM-L-6-v2"  # None disables
     rerank_top_k: int = 10
     rerank_chars: int = 600
     min_free_disk_mb: int = 1024  # refuse index writes below this (a full drive can corrupt SQLite/vector files)

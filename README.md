@@ -93,9 +93,9 @@ Settings live in `%LOCALAPPDATA%\StudyRetriever\config.json`. Notable options:
 
 | Option | Default | Purpose |
 |---|---|---|
-| `reranker_model` | `null` | Optional cross-encoder rerank of the top hits, e.g. `"Xenova/ms-marco-MiniLM-L-6-v2"` (80 MB, downloaded on first use). On a 39-query hand-labeled sample, reranking the top 10 hits (`rerank_top_k`, text cut to `rerank_chars`=600) raised MRR@10 from 0.51 to 0.65 for about 1.2 s extra per query; the sample is small and biased, so test it on your own material. |
+| `reranker_model` | `"Xenova/ms-marco-MiniLM-L-6-v2"` | Cross-encoder rerank of the top hits (80 MB, downloaded on first use; set to `null` to disable and save the model and about 1.2 s per query). On a 39-query hand-labeled sample, reranking the top 10 hits (`rerank_top_k`, text cut to `rerank_chars`=600) raised MRR@10 from 0.51 to 0.65 for about 1.2 s extra per query; the sample is small and biased, so test it on your own material. |
 | `exclude_globs` | `[]` | Patterns (relative to the root, e.g. `"*-presentation.pdf"`) that are never indexed. |
-| `allow_mcp_root_changes` | `false` | Let an assistant add/remove study roots through MCP tools. Off by default so text inside a document cannot widen what gets indexed; use `manage.cmd add-root <path>` instead. |
+| `allow_mcp_root_changes` | `true` | Let an assistant add/remove study roots through MCP tools. Set `false` (or env `STUDY_RETRIEVER_ALLOW_MCP_ROOT_CHANGES=0`) if you index untrusted documents: text inside a document could otherwise steer the assistant into widening what gets indexed. Sensitive folders stay blocked either way. |
 | `min_free_disk_mb` | `1024` | The indexer refuses to write when the data drive has less free space; `index_status` reports `free_disk_mb`. |
 | `model_idle_unload_seconds` | `300` | Drop the embedding model from RAM after this much idle time (about 180 MB per idle process); `0` disables. |
 | `max_text_bytes`, `max_office_uncompressed_bytes`, `max_ocr_pages` | 32 MB, 256 MB, 200 | Fail-closed limits against oversized or crafted files. |

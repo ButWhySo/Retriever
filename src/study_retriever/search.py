@@ -40,6 +40,8 @@ class SearchEngine:
         name = self.config.reranker_model
         if not name or len(hits) < 2:
             return hits
+        if self.config.vector_backend == "hashing" and self._reranker is None:
+            return hits  # offline/test backend: never download a model
         k = min(self.config.rerank_top_k, len(hits))
         try:
             scores = list(self._load_reranker(name).rerank(query, [h.text[: self.config.rerank_chars] for h in hits[:k]]))

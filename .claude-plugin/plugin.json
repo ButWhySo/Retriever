@@ -1,6 +1,6 @@
 {
   "name": "study-retriever",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "Local hybrid retrieval over study material with exact source provenance.",
   "author": {
     "name": "Study Retriever Contributors"
