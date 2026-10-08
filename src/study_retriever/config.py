@@ -58,6 +58,7 @@ class AppConfig:
     # Optional cross-encoder rerank of the top hybrid hits (off by default; adds a model and query latency).
     reranker_model: str | None = "Xenova/ms-marco-MiniLM-L-6-v2"  # None disables
     rerank_top_k: int = 10
+    max_results: int = 400  # candidate pool when a caller does not ask for a specific top_k (0 = all)
     rerank_chars: int = 600
     min_free_disk_mb: int = 1024  # refuse index writes below this (a full drive can corrupt SQLite/vector files)
     model_idle_unload_seconds: int = 300  # drop the embedding model from RAM when idle; 0 disables
@@ -78,6 +79,8 @@ class AppConfig:
             raise ValueError("watcher_debounce_seconds must be >= 0.1")
         if self.max_file_bytes < 1:
             raise ValueError("max_file_bytes must be >= 1")
+        if not 1 <= self.max_results <= 1000:
+            raise ValueError("max_results must be between 1 and 1000")
         if self.rerank_top_k < 1 or self.rerank_chars < 100:
             raise ValueError("rerank_top_k must be >= 1 and rerank_chars >= 100")
         if self.min_free_disk_mb < 0 or self.model_idle_unload_seconds < 0:

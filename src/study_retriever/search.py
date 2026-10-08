@@ -80,18 +80,20 @@ class SearchEngine:
         self,
         query: str,
         *,
-        top_k: int = 15,
+        top_k: int = 0,
         path_prefix: str | None = None,
         file_types: list[str] | None = None,
     ) -> list[SearchHit]:
+        """Ranked hits. top_k <= 0 means every candidate in the pool (config.max_results), not a short top-k."""
         query = query.strip()
         if not query:
             return []
-        top_k = max(1, min(int(top_k), 100))
+        top_k = int(top_k)
+        top_k = self.config.max_results if top_k <= 0 else min(top_k, 1000)
         multiplier = 12 if (path_prefix or file_types) else 4
         floor = 300 if (path_prefix or file_types) else 0
-        dense_limit = max(self.config.dense_candidate_count, top_k * multiplier, floor)
-        lexical_limit = max(self.config.lexical_candidate_count, top_k * multiplier, floor)
+        dense_limit = min(max(self.config.dense_candidate_count, top_k * multiplier, floor), 3000)
+        lexical_limit = min(max(self.config.lexical_candidate_count, top_k * multiplier, floor), 3000)
 
         try:
             dense_raw = self.vectors.search(query, dense_limit)
@@ -197,51 +199,62 @@ class SearchEngine:
         self,
         query: str,
         *,
-        max_chunks: int = 30,
-        max_chars: int = 45_000,
-        per_source: int = 8,
+        max_chunks: int = 0,
+        max_chars: int = 60_000,
+        per_source: int = 0,
+        offset: int = 0,
         path_prefix: str | None = None,
     ) -> dict:
-        max_chunks = max(1, min(max_chunks, 80))
+        """Everything matching a topic, paged. Hits are interleaved across sources so every matching source
+        shows up on the first page; `all_sources` lists every match; follow `next_offset` for the rest.
+        max_chunks / per_source of 0 mean no cap."""
         max_chars = max(2_000, min(max_chars, 90_000))  # stay under client tool-output caps
-        per_source = max(1, min(per_source, 20))
-        hits = self.hybrid_search(query, top_k=min(100, max_chunks * 3), path_prefix=path_prefix)
+        hits = self.hybrid_search(query, top_k=0, path_prefix=path_prefix)
+        groups: dict[str, list[SearchHit]] = {}
+        manifest: dict[str, dict] = {}
+        for rank, hit in enumerate(hits, start=1):
+            groups.setdefault(hit.source_id, []).append(hit)
+            entry = manifest.setdefault(hit.source_id, {
+                "source_id": hit.source_id, "title": hit.title, "path": hit.path, "url": hit.source_uri,
+                "matching_chunks": 0, "best_rank": rank,
+            })
+            entry["matching_chunks"] += 1
+        ordered: list[SearchHit] = []
+        for depth in range(max((len(g) for g in groups.values()), default=0)):
+            ordered.extend(g[depth] for g in groups.values() if depth < len(g))
+
+        offset = max(0, int(offset))
         selected: list[dict] = []
         seen: set[str] = set()
         by_source: dict[str, int] = defaultdict(int)
         total_chars = 0
-
-        for hit in hits:
-            if len(selected) >= max_chunks or total_chars >= max_chars:
-                break
-            hit_row = self.catalog.get_chunk(hit.chunk_id)
+        next_offset: int | None = None
+        for idx in range(offset, len(ordered)):
+            hit_row = self.catalog.get_chunk(ordered[idx].chunk_id)
             if not hit_row:
                 continue
-            neighbors = self.catalog.neighbors(hit.source_id, int(hit_row["ordinal"]), radius=1)
-            for row in neighbors:
-                if row["chunk_id"] in seen or by_source[row["source_id"]] >= per_source:
-                    continue
-                text = row["text"]
-                if total_chars + len(text) > max_chars and selected:
-                    continue
-                selected.append(row)
-                seen.add(row["chunk_id"])
-                by_source[row["source_id"]] += 1
-                total_chars += len(text)
-                if len(selected) >= max_chunks:
-                    break
+            rows = [
+                r for r in self.catalog.neighbors(hit_row["source_id"], int(hit_row["ordinal"]), radius=1)
+                if r["chunk_id"] not in seen
+            ]
+            if per_source > 0:
+                rows = rows[: max(0, per_source - by_source[hit_row["source_id"]])]
+            add = sum(len(r["text"]) for r in rows)
+            if selected and (total_chars + add > max_chars or (max_chunks > 0 and len(selected) + len(rows) > max_chunks)):
+                next_offset = idx
+                break
+            for r in rows:
+                selected.append(r)
+                seen.add(r["chunk_id"])
+                by_source[r["source_id"]] += 1
+            total_chars += add
 
         sources: dict[str, dict] = {}
         content_blocks: list[str] = []
         for row in selected:
             sid = row["source_id"]
             if sid not in sources:
-                sources[sid] = {
-                    "source_id": sid,
-                    "title": row["title"],
-                    "path": row["path"],
-                    "url": row["source_uri"],
-                }
+                sources[sid] = {"source_id": sid, "title": row["title"], "path": row["path"], "url": row["source_uri"]}
             content_blocks.append(f"[SOURCE {row['chunk_id']}] {self._locator_label(row)}\n{row['text']}")
         return {
             "query": query,
@@ -249,6 +262,10 @@ class SearchEngine:
             "characters": total_chars,
             "sources": list(sources.values()),
             "content": "\n\n---\n\n".join(content_blocks),
+            "total_matching_chunks": len(hits),
+            "offset": offset,
+            "next_offset": next_offset,
+            "all_sources": list(manifest.values()) if offset == 0 else [],
         }
 
     @staticmethod

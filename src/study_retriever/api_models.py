@@ -46,6 +46,8 @@ class DetailedSearchResult(StrictModel):
 class DetailedSearchResponse(StrictModel):
     results: list[DetailedSearchResult]
     degraded: bool = False  # True when the dense side failed and results are lexical-only
+    total: int = 0
+    next_offset: int | None = None  # more matches exist; call again with this offset
 
 
 class DetailedFetchResponse(StrictModel):
@@ -68,12 +70,21 @@ class TopicSource(StrictModel):
     url: str
 
 
+class TopicManifestEntry(TopicSource):
+    matching_chunks: int
+    best_rank: int
+
+
 class TopicBundleResponse(StrictModel):
     query: str
     chunk_count: int
     characters: int
     sources: list[TopicSource]
     content: str
+    total_matching_chunks: int = 0
+    offset: int = 0
+    next_offset: int | None = None  # more content: call again with offset=next_offset
+    all_sources: list[TopicManifestEntry] = []  # every matching source (first page only)
 
 
 class SourceBlock(StrictModel):

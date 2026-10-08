@@ -595,13 +595,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("search", help="Run hybrid semantic + BM25 search")
     s.add_argument("query")
-    s.add_argument("-k", "--top-k", type=int, default=15)
+    s.add_argument("-k", "--top-k", type=int, default=0)
     s.add_argument("--path-prefix")
     s.set_defaults(func=cmd_search)
 
     s = sub.add_parser("topic", help="Retrieve a source-grounded topic bundle")
     s.add_argument("query")
-    s.add_argument("--max-chunks", type=int, default=30)
+    s.add_argument("--max-chunks", type=int, default=0)
     s.add_argument("--max-chars", type=int, default=45_000)
     s.set_defaults(func=cmd_topic)
 

@@ -95,6 +95,7 @@ Settings live in `%LOCALAPPDATA%\StudyRetriever\config.json`. Notable options:
 |---|---|---|
 | `reranker_model` | `"Xenova/ms-marco-MiniLM-L-6-v2"` | Cross-encoder rerank of the top hits (80 MB, downloaded on first use; set to `null` to disable and save the model and about 1.2 s per query). On a 39-query hand-labeled sample, reranking the top 10 hits (`rerank_top_k`, text cut to `rerank_chars`=600) raised MRR@10 from 0.51 to 0.65 for about 1.2 s extra per query; the sample is small and biased, so test it on your own material. |
 | `exclude_globs` | `[]` | Patterns (relative to the root, e.g. `"*-presentation.pdf"`) that are never indexed. |
+| `max_results` | `400` | Candidate pool returned when a caller sets no `top_k` (search returns every match, not a short top-k). `curate_topic` lists every matching source in `all_sources` and pages the content with `next_offset`; `search_advanced` pages with `offset`/`next_offset`. |
 | `allow_mcp_root_changes` | `true` | Let an assistant add/remove study roots through MCP tools. Set `false` (or env `STUDY_RETRIEVER_ALLOW_MCP_ROOT_CHANGES=0`) if you index untrusted documents: text inside a document could otherwise steer the assistant into widening what gets indexed. Sensitive folders stay blocked either way. |
 | `min_free_disk_mb` | `1024` | The indexer refuses to write when the data drive has less free space; `index_status` reports `free_disk_mb`. |
 | `model_idle_unload_seconds` | `300` | Drop the embedding model from RAM after this much idle time (about 180 MB per idle process); `0` disables. |

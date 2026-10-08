@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "study-retriever",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "description": "Local hybrid retrieval over study notes, papers, slides, repos, notebooks, documents, and spreadsheets with exact source pointers.",
   "license": "MIT",
   "keywords": [

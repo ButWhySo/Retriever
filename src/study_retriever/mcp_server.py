@@ -64,20 +64,26 @@ def _tool_error(exc: Exception) -> ToolError:
 @mcp.tool(
     title="Search study material",
     description=(
-        "Search the persistent local study index and return citable result IDs. "
-        "Use fetch on a returned ID to retrieve the exact content and provenance."
+        "Search the persistent local study index and return citable result IDs for matching chunks "
+        "(as many as fit one response; search_advanced pages the full set). Use fetch on a returned ID to retrieve the exact content and provenance."
     ),
     annotations=READ_ONLY,
 )
 def search(query: str) -> SearchResponse:
-    """OpenAI company-knowledge compatible search(query) contract."""
+    """OpenAI company-knowledge compatible search(query) contract (exact shape); search_advanced pages the rest."""
     try:
         rt = _rt()
         with rt.lock:
-            hits = rt.search.hybrid_search(query, top_k=15)
-        return SearchResponse(results=[
-            SearchResult(id=h.chunk_id, title=h.title, url=h.source_uri) for h in hits
-        ])
+            hits = rt.search.hybrid_search(query, top_k=0)
+        results: list[SearchResult] = []
+        used = 0
+        for h in hits:
+            cost = len(h.title) + len(h.source_uri) + 120
+            if results and used + cost > 60_000:
+                break
+            results.append(SearchResult(id=h.chunk_id, title=h.title, url=h.source_uri))
+            used += cost
+        return SearchResponse(results=results)
     except ToolError:
         raise
     except Exception as exc:
@@ -120,33 +126,44 @@ def fetch(id: str) -> FetchResponse:
 @mcp.tool(
     title="Advanced study search",
     description=(
-        "Hybrid semantic + BM25 search with result count, path, and file-type filters. "
+        "Hybrid semantic + BM25 search with path and file-type filters. Returns every matching chunk by default (top_k=0); pages by size, follow next_offset. "
         "Use when focused retrieval needs scoping or detailed ranking/provenance fields."
     ),
     annotations=READ_ONLY,
 )
 def search_advanced(
     query: str,
-    top_k: int = 15,
+    top_k: int = 0,
     path_prefix: str | None = None,
     file_types: list[str] | None = None,
+    offset: int = 0,
 ) -> DetailedSearchResponse:
     try:
         rt = _rt()
         with rt.lock:
             hits = rt.search.hybrid_search(query, top_k=top_k, path_prefix=path_prefix, file_types=file_types)
         results = []
-        budget = 80_000  # total characters of full text per response; later hits fall back to snippets
-        for h in hits:
-            full = h.text if budget >= len(h.text) else h.text[:700]
+        budget = 60_000  # characters of full text per page; later hits fall back to short snippets
+        used = 0
+        next_offset = None
+        for i in range(max(0, offset), len(hits)):
+            h = hits[i]
+            full = h.text if budget >= len(h.text) else h.text[:300]
+            cost = len(full) + 300 + len(h.path) + len(h.title) + 400
+            if results and used + cost > 95_000:
+                next_offset = i
+                break
             budget -= len(full)
+            used += cost
             results.append(DetailedSearchResult(
                 id=h.chunk_id, source_id=h.source_id, title=h.title, url=h.source_uri,
-                text=full, snippet=h.text[:700], citation=h.citation(), path=h.path,
+                text=full, snippet=h.text[:300], citation=h.citation(), path=h.path,
                 section=h.section, locator=h.locator, score=h.score, dense_rank=h.dense_rank,
                 lexical_rank=h.lexical_rank,
             ))
-        return DetailedSearchResponse(results=results, degraded=rt.search.degraded)
+        return DetailedSearchResponse(
+            results=results, degraded=rt.search.degraded, total=len(hits), next_offset=next_offset
+        )
     except ToolError:
         raise
     except Exception as exc:
@@ -175,16 +192,18 @@ def fetch_context(id: str, neighbor_radius: int = 1) -> DetailedFetchResponse:
 @mcp.tool(
     title="Curate topic from all study material",
     description=(
-        "Retrieve a bounded, source-grounded bundle for broad teaching/review requests. "
+        "Retrieve everything matching a topic, source-grounded. all_sources lists EVERY matching source; "
+        "content is interleaved across sources and paged by size (call again with offset=next_offset until it is null). "
         "Use this first when the user asks to learn everything related to a topic; then call fetch/read_source only for important gaps."
     ),
     annotations=READ_ONLY,
 )
 def curate_topic(
     query: str,
-    max_chunks: int = 30,
-    max_chars: int = 45_000,
-    per_source: int = 8,
+    max_chunks: int = 0,
+    max_chars: int = 60_000,
+    per_source: int = 0,
+    offset: int = 0,
     path_prefix: str | None = None,
 ) -> TopicBundleResponse:
     try:
@@ -195,6 +214,7 @@ def curate_topic(
                 max_chunks=max_chunks,
                 max_chars=max_chars,
                 per_source=per_source,
+                offset=offset,
                 path_prefix=path_prefix,
             )
         return TopicBundleResponse.model_validate(result)

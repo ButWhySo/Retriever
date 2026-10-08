@@ -458,3 +458,28 @@ def test_optional_reranker_reorders_top_hits_and_fails_open(tmp_path: Path) -> N
         assert [h.chunk_id for h in rt.search.hybrid_search("alpha", top_k=5)] == plain
     finally:
         rt.close()
+
+
+def test_topic_bundle_lists_every_source_and_pages(tmp_path: Path) -> None:
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    for i in range(30):
+        (corpus / f"doc{i:02d}.md").write_text(("# T\n\n" + f"zebra quagga stripes number {i}. " * 60 + "\n"), encoding="utf-8")
+    rt = make_runtime(tmp_path)
+    try:
+        rt.add_root(str(corpus), sync_now=True)
+        first = rt.search.topic_bundle("zebra quagga stripes", max_chars=4_000)
+        assert len(first["all_sources"]) == 30  # nothing hidden behind a top-k
+        assert len({s["source_id"] for s in first["sources"]}) >= 2  # interleaved across sources, not one doc
+        assert first["next_offset"] is not None and first["total_matching_chunks"] >= 30
+        seen = {c.split("]")[0] for c in first["content"].split("[SOURCE ")[1:]}
+        offset, guard = first["next_offset"], 0
+        while offset is not None and guard < 200:
+            page = rt.search.topic_bundle("zebra quagga stripes", max_chars=4_000, offset=offset)
+            assert page["all_sources"] == []
+            seen |= {c.split("]")[0] for c in page["content"].split("[SOURCE ")[1:]}
+            offset, guard = page["next_offset"], guard + 1
+        assert offset is None and len(seen) >= 30
+        assert len(rt.search.hybrid_search("zebra quagga stripes")) >= 30  # default is the whole pool
+    finally:
+        rt.close()
